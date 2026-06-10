@@ -5,12 +5,15 @@ import os
 from dotenv import load_dotenv
 import plotly.express as px
 
+# 1. Configuración de página
 st.set_page_config(page_title="Dashboard Gerencial", layout="wide")
 st.title("📊 Panel de Inteligencia de Negocio - Restaurante")
 
+# 2. Conectar a Supabase
 load_dotenv()
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
+# 3. Función optimizada para extraer datos
 @st.cache_data(ttl=60)
 def cargar_datos():
     respuesta = supabase.table('resena_aspecto').select(
@@ -32,6 +35,42 @@ def cargar_datos():
     
     return df
 
+# --- 🛠️ NUEVO FEATURE: SECCIÓN DE CARGA AUTÓNOMA PARA EL GERENTE ---
+st.sidebar.header("⚙️ Panel de Administración")
+st.sidebar.markdown("Carga un nuevo archivo de reseñas para procesar con el motor de IA.")
+
+archivo_subido = st.sidebar.file_uploader(
+    "Selecciona el archivo CSV de reseñas", 
+    type=["csv"],
+    help="El archivo debe incluir las columnas estándar: username, texto_resena, id_restaurante"
+)
+
+if archivo_subido is not None:
+    st.sidebar.info("📂 Archivo cargado temporalmente en memoria.")
+    
+    # Botón interactivo para disparar el backend
+    if st.sidebar.button("🧠 Ejecutar Análisis con IA"):
+        with st.spinner("La IA está clasificando los aspectos y sentimientos. Por favor espera..."):
+            try:
+                # Leemos la data directamente del buffer de Streamlit a un DataFrame
+                df_nuevo = pd.read_csv(archivo_subido)
+                
+                # Importación dinámica para evitar conflictos antes de refactorizar main.py
+                from main import procesar_nuevas_resenas
+                
+                # Enviamos el DataFrame cargado al motor ETL de IA
+                procesar_nuevas_resenas(df_nuevo)
+                
+                st.sidebar.success("🚀 ¡Base de datos actualizada con éxito!")
+                
+                # Forzamos la limpieza de la caché de Streamlit para leer la nueva data al instante
+                st.cache_data.clear()
+                st.rerun()
+                
+            except Exception as e:
+                st.sidebar.error(f"❌ Ocurrió un error en el proceso: {e}")
+
+# --- 4. CONSTRUCCIÓN VISUAL PRINCIPAL ---
 df_analisis = cargar_datos()
 
 if df_analisis.empty:
