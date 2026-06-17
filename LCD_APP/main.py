@@ -15,16 +15,13 @@ def procesar_nuevas_resenas(df):
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise ValueError("Error: No se encontraron las credenciales en el archivo .env")
 
-    # 1. Guardar el archivo subido en la web como un CSV temporal local
     ruta_temporal = "temp_dataset_resenas.csv"
     df.to_csv(ruta_temporal, index=False)
     
     try:
-        # 2. Inicializar tu motor de IA y procesar el archivo temporal
         app = AnalizadorAspectos(SUPABASE_URL, SUPABASE_KEY)
         app.procesar_lote_csv(ruta_temporal)
     finally:
-        # 3. Limpieza de seguridad: Borrar el archivo temporal pase lo que pase
         if os.path.exists(ruta_temporal):
             os.remove(ruta_temporal)
 
