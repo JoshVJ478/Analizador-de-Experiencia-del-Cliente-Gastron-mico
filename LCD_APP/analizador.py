@@ -1,6 +1,12 @@
 import pandas as pd
+import os
 from supabase import create_client, Client
 from transformers import pipeline
+from rich.console import Console
+from rich.progress import track
+from rich.table import Table
+
+console = Console()
 
 class ProcesadorDatosBase:
     def __init__(self, db_url: str, db_key: str):
@@ -8,9 +14,9 @@ class ProcesadorDatosBase:
 
     def _conectar_bd(self, url: str, key: str):
         try:
-            print("Conectando a la base de datos Supabase...")
+            console.print("[cyan]Conectando a la base de datos Supabase...[/cyan]")
             self.supabase: Client = create_client(url, key)
-            print("Conexión exitosa a Supabase.")
+            console.print("[bold green]✅ Conexión exitosa a Supabase.[/bold green]")
         except Exception as e:
             raise ConnectionError(f"Error al conectar con Supabase: {e}")
 
@@ -23,61 +29,8 @@ class ProcesadorDatosBase:
                 nuevo = self.supabase.table('cliente').insert({"username": username}).execute()
                 return nuevo.data[0]['id_cliente']
         except Exception as e:
-            print(f"Error al gestionar el cliente '{username}': {e}")
+            console.print(f"[red]Error al gestionar el cliente '{username}': {e}[/red]")
             return None
-
-
-class AnalizadorGeneral(ProcesadorDatosBase):
-    def __init__(self, db_url: str, db_key: str):
-        super().__init__(db_url, db_key)
-        self._cargar_modelo_ia()
-        self.mapa_sentimientos = {"POS": 1, "NEG": 2, "NEU": 3}
-
-    def _cargar_modelo_ia(self):
-        try:
-            print("Cargando modelo de Inteligencia Artificial de Hugging Face...")
-            self.clasificador = pipeline("sentiment-analysis", model="pysentimiento/robertuito-sentiment-analysis")
-            print("Modelo de IA cargado y listo.")
-        except Exception as e:
-            raise RuntimeError(f"Error al cargar el modelo de Hugging Face: {e}")
-
-    def procesar_lote_csv(self, ruta_csv: str):
-        print(f"\nIniciando procesamiento del archivo: {ruta_csv}")
-        try:
-            df = pd.read_csv(ruta_csv)
-            
-            for index, fila in df.iterrows():
-                username = fila['username']
-                texto = fila['texto_resena']
-                id_restaurante = fila['id_restaurante']
-
-                id_cliente = self._obtener_o_crear_cliente(username)
-                if not id_cliente:
-                    continue 
-                
-                resultado_ia = self.clasificador(texto)[0]
-                etiqueta_ia = resultado_ia['label']
-                score = round(resultado_ia['score'], 4)
-                
-                id_sentimiento = self.mapa_sentimientos.get(etiqueta_ia, 3)
-                
-                datos_insercion = {
-                    "id_restaurante": id_restaurante,
-                    "id_cliente": id_cliente,
-                    "texto_original": texto,
-                    "id_sentimiento": id_sentimiento,
-                    "score_confianza_ia": score
-                }
-                self.supabase.table('resena').insert(datos_insercion).execute()
-                
-                print(f"  -> Reseña de {username} | IA: {etiqueta_ia} (Confianza: {score}) | Guardado en BD ✅")
-                
-            print("\nProcesamiento completado al 100%. Revisa tu tabla 'resena' en Supabase.")
-
-        except FileNotFoundError:
-            print(f"No se encontró el archivo {ruta_csv}. Verifica la ruta.")
-        except Exception as e:
-            print(f"Ocurrió un error inesperado durante el procesamiento: {e}")
 
 
 class AnalizadorAspectos(ProcesadorDatosBase):
@@ -90,21 +43,29 @@ class AnalizadorAspectos(ProcesadorDatosBase):
 
     def _cargar_modelo_ia(self):
         try:
-            print("⏳ Cargando modelo Multilingüe Zero-Shot (MdeBERTa-v3)...")
+            console.print("[yellow]⏳ Cargando modelo Multilingüe Zero-Shot (MdeBERTa-v3)...[/yellow]")
             self.clasificador = pipeline("zero-shot-classification", model="MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
-            print("✅ Modelo Zero-Shot cargado y listo.")
+            console.print("[bold green]✅ Modelo Zero-Shot cargado y listo.[/bold green]")
         except Exception as e:
             raise RuntimeError(f"❌ Error al cargar el modelo Zero-Shot: {e}")
 
     def procesar_lote_csv(self, ruta_csv: str):
-        print(f"\nIniciando análisis multidimensional del archivo: {ruta_csv}")
+        console.print(f"\n[bold blue]Iniciando análisis multidimensional del archivo:[/bold blue] {ruta_csv}")
         try:
             df = pd.read_csv(ruta_csv)
+            
+            total_original = len(df)
+            df = df.dropna(subset=['texto_resena'])
+
+            df = df[df['texto_resena'].apply(lambda x: len(str(x).strip().split()) >= 3)]
+            console.print(f"[dim]Filtro funcional aplicado: {total_original - len(df)} reseñas descartadas por irrelevantes o vacías.[/dim]\n")
             
             respuesta_aspectos = self.supabase.table('aspecto').select('id_aspecto', 'nombre').execute()
             mapa_aspectos_db = {item['nombre']: item['id_aspecto'] for item in respuesta_aspectos.data}
             
-            for index, fila in df.iterrows():
+            reporte_local = []
+            
+            for index, fila in track(df.iterrows(), total=len(df), description="[cyan]Procesando reseñas con IA...[/cyan]"):
                 username, texto, id_restaurante = fila['username'], fila['texto_resena'], fila['id_restaurante']
                 
                 id_cliente = self._obtener_o_crear_cliente(username)
@@ -120,7 +81,6 @@ class AnalizadorAspectos(ProcesadorDatosBase):
                 nueva_resena = self.supabase.table('resena').insert(datos_resena_general).execute()
                 id_resena = nueva_resena.data[0]['id_resena']
                 
-                print(f"\nAnalizando a {username}:")
                 for aspecto in self.etiquetas_aspectos:
                     hipotesis = [f"el sentimiento sobre {aspecto} es positivo", f"el sentimiento sobre {aspecto} es negativo"]
                     resultado = self.clasificador(texto, hipotesis, multi_label=False)
@@ -138,10 +98,34 @@ class AnalizadorAspectos(ProcesadorDatosBase):
                     }
                     self.supabase.table('resena_aspecto').insert(datos_aspecto).execute()
                     
-                    estado = "✅ POS" if id_sentimiento_aspecto == 1 else "❌ NEG"
-                    print(f"  -> {aspecto}: {estado} ({confianza})")
+                    estado = "POSITIVO" if id_sentimiento_aspecto == 1 else ("NEGATIVO" if id_sentimiento_aspecto == 2 else "NEUTRO")
+                    reporte_local.append({
+                        "Usuario": username,
+                        "Aspecto Evaluado": aspecto,
+                        "Sentimiento IA": estado,
+                        "Confianza": f"{confianza*100:.2f}%"
+                    })
                     
-            print("\nProcesamiento completado. Revisa tus tablas en Supabase.")
+            df_reporte = pd.DataFrame(reporte_local)
+            
+            directorio_base = os.path.dirname(os.path.abspath(__file__))
+            ruta_reportes = os.path.join(directorio_base, "reportes")
+            os.makedirs(ruta_reportes, exist_ok=True) 
+            
+            ruta_salida = os.path.join(ruta_reportes, "reporte_ejecutivo.csv")
+            df_reporte.to_csv(ruta_salida, index=False)
+            
+            print("\n")
+            tabla = Table(title="📊 Resumen de Ejecución ETL")
+            tabla.add_column("Métrica Operativa", justify="left", style="cyan", no_wrap=True)
+            tabla.add_column("Resultado", justify="right", style="magenta")
+            
+            tabla.add_row("Reseñas Validas Procesadas", str(len(df)))
+            tabla.add_row("Dimensiones Evaluadas", str(len(reporte_local)))
+            tabla.add_row("Reporte Generado", "reporte_ejecutivo.csv")
+            
+            console.print(tabla)
+            console.print("[bold green]✅ ¡Pipeline ejecutado y cargado en Supabase con éxito![/bold green]\n")
 
         except Exception as e:
-            print(f"❌ Ocurrió un error inesperado: {e}")
+            console.print(f"[bold red]❌ Ocurrió un error inesperado: {e}[/bold red]")
